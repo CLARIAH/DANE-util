@@ -76,7 +76,7 @@ def digest_file_list(
     If not, the file list (which may contain directories) is processed recursively,
     adding each (file, key). Directory structure is maintained as infix.
     """
-    
+
     # first check if the file_list needs to be compressed (into tar)
     if tar_archive_path:
         tar_success = tar_list_of_files(tar_archive_path, file_list)
@@ -183,16 +183,20 @@ class S3Store:
         Clean up the prefix in the bucket: delete all keys with the specified prefix.
         """
         response = self.client.list_objects(Bucket=bucket, Prefix=prefix)
-        if len(response['Contents'])>0:
-            logger.warn(f"Prefix '{prefix}' exists in bucket '{bucket}'.")                        
+        if len(response["Contents"]) > 0:
+            logger.warn(f"Prefix '{prefix}' exists in bucket '{bucket}'.")
             to_delete = []
             while True:
-                to_delete += [{'Key': item['Key']} for item in  response['Contents']]
-                if not response['IsTruncated']:
+                to_delete += [{"Key": item["Key"]} for item in response["Contents"]]
+                if not response["IsTruncated"]:
                     break
-                response = self.client.list_objects(Bucket=bucket, Prefix=prefix, Marker=response['Contents'][-1]['Key'])            
-            logger.warn(f"Removing {len(to_delete)} item with '{prefix}' as prefix from bucket.")
-            self.client.delete_objects(Bucket=bucket, Delete={'Objects': to_delete})
+                response = self.client.list_objects(
+                    Bucket=bucket, Prefix=prefix, Marker=response["Contents"][-1]["Key"]
+                )
+            logger.warn(
+                f"Removing {len(to_delete)} item with '{prefix}' as prefix from bucket."
+            )
+            self.client.delete_objects(Bucket=bucket, Delete={"Objects": to_delete})
         # TODO: Add error handling
 
     def transfer_to_s3(
@@ -205,11 +209,10 @@ class S3Store:
         archive first. Otherwise, the directory structure in file_list is maintained
         in the prefix.
         """
-        self.clear_prefix(bucket, prefix) # clean up any old stuff
+        self.clear_prefix(bucket, prefix)  # clean up any old stuff
         file_and_key_list = digest_file_list(
-            file_list=file_list,
-            prefix=prefix,
-            tar_archive_path=tar_archive_path)
+            file_list=file_list, prefix=prefix, tar_archive_path=tar_archive_path
+        )
 
         # now go ahead and upload whatever is in the file list
         for f, k in file_and_key_list:
@@ -232,15 +235,51 @@ class S3Store:
         if not os.path.exists(output_folder):
             logger.info("Output folder does not exist, creating it...")
             os.makedirs(output_folder)
-        output_file = os.path.join(output_folder, os.path.basename(object_name))
-        try:
-            with open(output_file, "wb") as f:
-                success = self.client.download_fileobj(bucket, object_name, f)
-        except Exception:
-            logger.exception(f"Failed to download {object_name}")
+        success = False
+        output_path = os.path.join(output_folder, os.path.basename(object_name))
+        if "tar.gz" in object_name:
+            try:
+                with open(output_path, "wb") as f:
+                    success = self.client.download_fileobj(bucket, object_name, f)
+            except Exception:
+                logger.exception(f"Failed to download {object_name}")
+        else:
+            response = self.client.list_objects(Bucket=bucket, Prefix=object_name)
+            if len(response["Contents"]) == 0:
+                logger.error(
+                    f"No content available in bucket '{bucket}' for prefix '{object_name}'."
+                )
+            else:
+                to_download = []
+                while True:
+                    to_download += [
+                        {"Key": item["Key"]} for item in response["Contents"]
+                    ]
+                    if not response["IsTruncated"]:
+                        break
+                    response = self.client.list_objects(
+                        Bucket=bucket,
+                        Prefix=object_name,
+                        Marker=response["Contents"][-1]["Key"],
+                    )
+                for item in to_download:
+                    # path within bucket, e.g. 'test_items/1411058.1366653.WEEKNUMMER404-HRE000042FF_924200_1089200/keyframes/105320.jpg'}
+                    splitpath = item["Key"].split("/")
+                    subpath, basename = splitpath[1:-1], splitpath[-1]
+                    location = os.path.join(output_path, subpath)
+                    if not os.path.exists(location):
+                        os.makedirs(location)
+                    try:
+                        with open(os.path.join(location, basename), "wb") as f:
+                            success = self.client.download_fileobj(bucket, item, f)
+                    except Exception:
+                        logger.exception(
+                            f"Failed to download {item} from bucket {bucket}."
+                        )
+                        success = False
 
         return DownloadResult(
             success=success,
-            file_path=output_file,
+            file_path=output_path,
             download_time=time() - start_time,
         )
