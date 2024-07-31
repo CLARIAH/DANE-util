@@ -235,14 +235,15 @@ class S3Store:
         if not os.path.exists(output_folder):
             logger.info("Output folder does not exist, creating it...")
             os.makedirs(output_folder)
-        success = False
         output_path = os.path.join(output_folder, os.path.basename(object_name))
         if "tar.gz" in object_name:
             try:
                 with open(output_path, "wb") as f:
-                    success = self.client.download_fileobj(bucket, object_name, f)
+                    self.client.download_fileobj(bucket, object_name, f)
+                success = True
             except Exception:
                 logger.exception(f"Failed to download {object_name}")
+                success = False
         else:
             response = self.client.list_objects_v2(Bucket=bucket, Prefix=object_name)
             if response['KeyCount'] == 0:
@@ -251,6 +252,7 @@ class S3Store:
                 )
                 success = False
             else:
+
                 to_download = []
                 while True:
                     to_download += [
@@ -263,16 +265,17 @@ class S3Store:
                         Prefix=object_name,
                         Marker=response["Contents"][-1]["Key"],
                     )
+                success = True  # Upon failure, will be set to False
                 for item in to_download:
                     # path within bucket, e.g. 'test_items/1411058.1366653.WEEKNUMMER404-HRE000042FF_924200_1089200/keyframes/105320.jpg'}
                     splitpath = item["Key"].split("/")
-                    subpath, basename = splitpath[1:-1], splitpath[-1]
-                    location = os.path.join(output_path, subpath)
+                    subpath, basename = splitpath[2:-1], splitpath[-1]
+                    location = os.path.join(output_path, *subpath)
                     if not os.path.exists(location):
                         os.makedirs(location)
                     try:
                         with open(os.path.join(location, basename), "wb") as f:
-                            success = self.client.download_fileobj(bucket, item, f)
+                            self.client.download_fileobj(Bucket=bucket, Key=item['Key'], Fileobj=f)
                     except Exception:
                         logger.exception(
                             f"Failed to download {item} from bucket {bucket}."
