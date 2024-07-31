@@ -244,11 +244,12 @@ class S3Store:
             except Exception:
                 logger.exception(f"Failed to download {object_name}")
         else:
-            response = self.client.list_objects(Bucket=bucket, Prefix=object_name)
-            if len(response["Contents"]) == 0:
+            response = self.client.list_objects_v2(Bucket=bucket, Prefix=object_name)
+            if response['KeyCount'] == 0:
                 logger.error(
                     f"No content available in bucket '{bucket}' for prefix '{object_name}'."
                 )
+                success = False
             else:
                 to_download = []
                 while True:
@@ -257,7 +258,7 @@ class S3Store:
                     ]
                     if not response["IsTruncated"]:
                         break
-                    response = self.client.list_objects(
+                    response = self.client.list_objects_v2(
                         Bucket=bucket,
                         Prefix=object_name,
                         Marker=response["Contents"][-1]["Key"],
