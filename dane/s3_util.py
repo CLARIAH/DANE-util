@@ -183,7 +183,7 @@ class S3Store:
         Clean up the prefix in the bucket: delete all keys with the specified prefix.
         """
         response = self.client.list_objects(Bucket=bucket, Prefix=prefix)
-        if len(response["Contents"]) > 0:
+        if response['KeyCount'] > 0:
             logger.warn(f"Prefix '{prefix}' exists in bucket '{bucket}'.")
             to_delete = []
             while True:
@@ -226,6 +226,72 @@ class S3Store:
                 logger.exception(f"Failed to upload {f}")
                 return False
         return True
+    
+    def list_prefix(self, bucket: str, prefix: str)->List[str]:
+        '''List all keys in the specified bucket that have the specified prefix'''
+        response = self.client.list_objects_v2(Bucket=bucket, Prefix=prefix)
+        to_download = []
+        if response['KeyCount'] > 0:
+            while True:
+                to_download += [
+                    {"Key": item["Key"]} for item in response["Contents"]
+                ]
+                if not response["IsTruncated"]:
+                    break
+                response = self.client.list_objects_v2(
+                    Bucket=bucket,
+                    Prefix=object_name,
+                    Marker=response["Contents"][-1]["Key"],
+                )
+        return to_download
+
+    def download_prefix(self, bucket: str, prefix: str, output_folder:str):        
+        # Prevent useless nested paths: figure out which part of the prefix is not a postfix of the output folder        
+        start_time = time()
+        output_folder_parts = os.path.split(output_folder)
+        prefix_parts = os.path.split(prefix)
+        prefix_to_skip = 0
+        try: 
+            index = output_folder_parts.index(prefix[0])
+            for i, pt in enumerate(output_folder_parts[index:]):
+                assert prefix_parts[i] == pt
+                prefix_to_skip = i+1
+        except ValueError:
+            # no overlap between outputfolder and prefix
+            prefix_to_skip = 0
+        except AssertionError:
+            # overlap between outputfolder and prefix is not consistent
+            prefix_to_skip = 0
+        import pdb
+        pdb.set_trace()
+        to_download = self.list_prefix(bucket=bucket, prefix=prefix)
+        if len(to_download) == 0:
+            logger.error(
+                    f"No content available in bucket '{bucket}' for prefix '{object_name}'."
+                )
+            success = False
+        else:
+            success = True  # Upon failure, will be set to False
+            for item in to_download:
+                # path within bucket, e.g. 'test_items/1411058.1366653.WEEKNUMMER404-HRE000042FF_924200_1089200/keyframes/105320.jpg'}
+                splitpath = item["Key"].split("/")
+                prefix, basename = splitpath[:-1], splitpath[-1]
+                location = os.path.join(output_folder, *prefix[prefix_to_skip:])
+                if not os.path.exists(location):
+                    os.makedirs(location)
+                try:
+                    with open(os.path.join(location, basename), "wb") as f:
+                        self.client.download_fileobj(Bucket=bucket, Key=item['Key'], Fileobj=f)
+                except Exception:
+                    logger.exception(
+                        f"Failed to download {item} from bucket {bucket}."
+                    )
+                    success = False
+        return DownloadResult(
+            success=success,
+            file_path=os.path.join(output_folder, *prefix_parts[prefix_to_skip:]),
+            download_time=time() - start_time,
+        )
 
     def download_file(
         self, bucket: str, object_name: str, output_folder: str
@@ -235,55 +301,18 @@ class S3Store:
         if not os.path.exists(output_folder):
             logger.info("Output folder does not exist, creating it...")
             os.makedirs(output_folder)
-        output_path = os.path.join(output_folder, os.path.basename(object_name))
         if "tar.gz" in object_name:
             try:
-                with open(output_path, "wb") as f:
+                with open(os.path.join(output_folder, os.path.basename(object_name)), "wb") as f:
                     self.client.download_fileobj(bucket, object_name, f)
                 success = True
             except Exception:
                 logger.exception(f"Failed to download {object_name}")
                 success = False
+            return DownloadResult(
+                success=success,
+                file_path=output_path,
+                download_time=time() - start_time,
+            )
         else:
-            response = self.client.list_objects_v2(Bucket=bucket, Prefix=object_name)
-            if response['KeyCount'] == 0:
-                logger.error(
-                    f"No content available in bucket '{bucket}' for prefix '{object_name}'."
-                )
-                success = False
-            else:
-
-                to_download = []
-                while True:
-                    to_download += [
-                        {"Key": item["Key"]} for item in response["Contents"]
-                    ]
-                    if not response["IsTruncated"]:
-                        break
-                    response = self.client.list_objects_v2(
-                        Bucket=bucket,
-                        Prefix=object_name,
-                        Marker=response["Contents"][-1]["Key"],
-                    )
-                success = True  # Upon failure, will be set to False
-                for item in to_download:
-                    # path within bucket, e.g. 'test_items/1411058.1366653.WEEKNUMMER404-HRE000042FF_924200_1089200/keyframes/105320.jpg'}
-                    splitpath = item["Key"].split("/")
-                    subpath, basename = splitpath[2:-1], splitpath[-1]
-                    location = os.path.join(output_path, *subpath)
-                    if not os.path.exists(location):
-                        os.makedirs(location)
-                    try:
-                        with open(os.path.join(location, basename), "wb") as f:
-                            self.client.download_fileobj(Bucket=bucket, Key=item['Key'], Fileobj=f)
-                    except Exception:
-                        logger.exception(
-                            f"Failed to download {item} from bucket {bucket}."
-                        )
-                        success = False
-
-        return DownloadResult(
-            success=success,
-            file_path=output_path,
-            download_time=time() - start_time,
-        )
+            return self.download_prefix(bucket=bucket, prefix=object_name, output_folder=output_folder)
