@@ -182,17 +182,9 @@ class S3Store:
         """
         Clean up the prefix in the bucket: delete all keys with the specified prefix.
         """
-        response = self.client.list_objects(Bucket=bucket, Prefix=prefix)
-        if response["KeyCount"] > 0:
+        to_delete = self.list_prefix(bucket=bucket, prefix=prefix)
+        if len(to_delete) > 0:
             logger.warn(f"Prefix '{prefix}' exists in bucket '{bucket}'.")
-            to_delete = []
-            while True:
-                to_delete += [{"Key": item["Key"]} for item in response["Contents"]]
-                if not response["IsTruncated"]:
-                    break
-                response = self.client.list_objects(
-                    Bucket=bucket, Prefix=prefix, Marker=response["Contents"][-1]["Key"]
-                )
             logger.warn(
                 f"Removing {len(to_delete)} item with '{prefix}' as prefix from bucket."
             )
