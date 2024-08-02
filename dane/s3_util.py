@@ -183,7 +183,7 @@ class S3Store:
         Clean up the prefix in the bucket: delete all keys with the specified prefix.
         """
         response = self.client.list_objects(Bucket=bucket, Prefix=prefix)
-        if response['KeyCount'] > 0:
+        if response["KeyCount"] > 0:
             logger.warn(f"Prefix '{prefix}' exists in bucket '{bucket}'.")
             to_delete = []
             while True:
@@ -226,66 +226,62 @@ class S3Store:
                 logger.exception(f"Failed to upload {f}")
                 return False
         return True
-    
-    def list_prefix(self, bucket: str, prefix: str)->List[str]:
-        '''List all keys in the specified bucket that have the specified prefix'''
+
+    def list_prefix(self, bucket: str, prefix: str) -> List[dict]:
+        """List all keys in the specified bucket that have the specified prefix"""
         response = self.client.list_objects_v2(Bucket=bucket, Prefix=prefix)
         to_download = []
-        if response['KeyCount'] > 0:
+        if response["KeyCount"] > 0:
             while True:
-                to_download += [
-                    {"Key": item["Key"]} for item in response["Contents"]
-                ]
+                to_download += [{"Key": item["Key"]} for item in response["Contents"]]
                 if not response["IsTruncated"]:
                     break
                 response = self.client.list_objects_v2(
                     Bucket=bucket,
-                    Prefix=object_name,
+                    Prefix=prefix,
                     Marker=response["Contents"][-1]["Key"],
                 )
         return to_download
 
-    def download_prefix(self, bucket: str, prefix: str, output_folder:str):        
-        # Prevent useless nested paths: figure out which part of the prefix is not a postfix of the output folder        
+    def download_prefix(self, bucket: str, prefix: str, output_folder: str):
+        # Prevent useless nested paths: figure out which part of the prefix is not a postfix of the output folder
         start_time = time()
-        output_folder_parts = os.path.split(output_folder)
-        prefix_parts = os.path.split(prefix)
-        prefix_to_skip = 0
-        try: 
-            index = output_folder_parts.index(prefix[0])
-            for i, pt in enumerate(output_folder_parts[index:]):
-                assert prefix_parts[i] == pt
-                prefix_to_skip = i+1
+        output_folder_parts = output_folder.split("/")
+        prefix_parts = prefix.split("/")
+        depth_in_bucket = (
+            1  # assuming depth of a root folder in the bucket, e.g. assets
+        )
+        try:
+            prefix_to_skip = (
+                prefix_parts.index(output_folder_parts[-1]) + depth_in_bucket
+            )
         except ValueError:
             # no overlap between outputfolder and prefix
             prefix_to_skip = 0
-        except AssertionError:
-            # overlap between outputfolder and prefix is not consistent
-            prefix_to_skip = 0
-        import pdb
-        pdb.set_trace()
+
         to_download = self.list_prefix(bucket=bucket, prefix=prefix)
         if len(to_download) == 0:
             logger.error(
-                    f"No content available in bucket '{bucket}' for prefix '{object_name}'."
-                )
+                f"No content available in bucket '{bucket}' for prefix '{prefix}'."
+            )
             success = False
         else:
             success = True  # Upon failure, will be set to False
             for item in to_download:
                 # path within bucket, e.g. 'test_items/1411058.1366653.WEEKNUMMER404-HRE000042FF_924200_1089200/keyframes/105320.jpg'}
-                splitpath = item["Key"].split("/")
-                prefix, basename = splitpath[:-1], splitpath[-1]
-                location = os.path.join(output_folder, *prefix[prefix_to_skip:])
+                this_prefix, basename = os.path.split(item["Key"])
+                location = os.path.join(
+                    output_folder, *this_prefix.split("/")[prefix_to_skip:]
+                )
                 if not os.path.exists(location):
                     os.makedirs(location)
                 try:
                     with open(os.path.join(location, basename), "wb") as f:
-                        self.client.download_fileobj(Bucket=bucket, Key=item['Key'], Fileobj=f)
+                        self.client.download_fileobj(
+                            Bucket=bucket, Key=item["Key"], Fileobj=f
+                        )
                 except Exception:
-                    logger.exception(
-                        f"Failed to download {item} from bucket {bucket}."
-                    )
+                    logger.exception(f"Failed to download {item} from bucket {bucket}.")
                     success = False
         return DownloadResult(
             success=success,
@@ -302,8 +298,9 @@ class S3Store:
             logger.info("Output folder does not exist, creating it...")
             os.makedirs(output_folder)
         if "tar.gz" in object_name:
+            output_path = os.path.join(output_folder, os.path.basename(object_name))
             try:
-                with open(os.path.join(output_folder, os.path.basename(object_name)), "wb") as f:
+                with open(output_path, "wb") as f:
                     self.client.download_fileobj(bucket, object_name, f)
                 success = True
             except Exception:
@@ -315,4 +312,6 @@ class S3Store:
                 download_time=time() - start_time,
             )
         else:
-            return self.download_prefix(bucket=bucket, prefix=object_name, output_folder=output_folder)
+            return self.download_prefix(
+                bucket=bucket, prefix=object_name, output_folder=output_folder
+            )
